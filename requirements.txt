@@ -1,0 +1,5 @@
+aiogram==3.11.0
+sqlalchemy==1.4.47  # Используем стабильную версию 1.4
+python-dateutil==2.8.2
+pytz==2023.3
+python-dotenv==1.0.0
