@@ -15,7 +15,7 @@ class Booking(Base):
     username = Column(String)
     full_name = Column(String)
     phone = Column(String)
-    zone = Column(String)  # quiet или karaoke
+    zone = Column(String, default='main')  # теперь только 'main'
     table_number = Column(Integer)
     date = Column(String)  # YYYY-MM-DD
     time = Column(String)  # HH:MM

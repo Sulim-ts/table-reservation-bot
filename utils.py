@@ -27,17 +27,15 @@ def format_booking(booking):
     )
 
 
-def get_booked_tables(date, time, zone=None):
+def get_booked_tables(date, time, zone='main'):  # по умолчанию 'main'
     session = get_session()
     try:
         query = session.query(Booking).filter(
             Booking.date == date,
             Booking.time == time,
-            Booking.status.in_(['pending', 'confirmed'])
+            Booking.status.in_(['pending', 'confirmed']),
+            Booking.zone == zone  # только основной зал
         )
-
-        if zone:
-            query = query.filter(Booking.zone == zone)
 
         bookings = query.all()
         return [booking.table_number for booking in bookings]
@@ -45,7 +43,7 @@ def get_booked_tables(date, time, zone=None):
         session.close()
 
 
-def get_available_tables(date, time, zone):
+def get_available_tables(date, time, zone='main'):  # по умолчанию 'main'
     booked_tables = get_booked_tables(date, time, zone)
     all_tables = config.TABLES.get(zone, [])
     return [table for table in all_tables if table not in booked_tables]
@@ -99,7 +97,7 @@ def format_booking_data(data):
             f"📊 Статус: {status_display}"
         )
     else:
-        zone_name = config.ZONES.get(data['zone'], data['zone'])
+        zone_name = config.ZONES.get(data.get('zone', 'main'), 'Основной зал')
         return (
             f"📅 Дата: {data['date']}\n"
             f"⏰ Время: {data['time']}\n"

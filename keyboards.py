@@ -1,282 +1,407 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from config import config
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime, timedelta
+from config import config
+from utils import get_available_tables
 
 
+# Основное меню (более интуитивное)
 def get_main_menu():
-    keyboard = [
-        [KeyboardButton(text="📅 Забронировать столик")],
-        [KeyboardButton(text="📋 Мои бронирования")],
-        [KeyboardButton(text="📞 Контакты")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🎯 Забронировать столик")],
+            [KeyboardButton(text="📋 Мои бронирования"), KeyboardButton(text="ℹ️ О нас")],
+            [KeyboardButton(text="🆘 Помощь"), KeyboardButton(text="📞 Контакты")]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Выберите действие 👆"
+    )
+    return keyboard
 
 
+# Меню администратора
+def get_admin_menu():
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📊 Все бронирования")],
+            [KeyboardButton(text="⏳ Ожидают подтверждения"), KeyboardButton(text="✅ Подтвержденные")],
+            [KeyboardButton(text="📅 На сегодня"), KeyboardButton(text="📅 На завтра")],
+            [KeyboardButton(text="↩️ Назад в меню")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+
+# Клавиатура для быстрого выбора даты
 def get_date_selection():
-    """Получить клавиатуру для выбора даты с кнопками Сегодня, Завтра и Выбор месяца"""
-    builder = InlineKeyboardBuilder()
-
-    # Текущая дата
     today = datetime.now()
+
+    # Кнопки на ближайшие дни
+    keyboard = []
+
+    # Сегодня
+    today_str = today.strftime('%Y-%m-%d')
+    keyboard.append([
+        InlineKeyboardButton(text=f"📅 Сегодня ({today.day}.{today.month})", callback_data=f"date_{today_str}")
+    ])
+
+    # Завтра
     tomorrow = today + timedelta(days=1)
+    tomorrow_str = tomorrow.strftime('%Y-%m-%d')
+    keyboard.append([
+        InlineKeyboardButton(text=f"📅 Завтра ({tomorrow.day}.{tomorrow.month})", callback_data=f"date_{tomorrow_str}")
+    ])
 
-    # Форматируем для отображения
-    today_display = today.strftime("%d.%m.%Y")
-    tomorrow_display = tomorrow.strftime("%d.%m.%Y")
+    # Послезавтра
+    day_after = today + timedelta(days=2)
+    day_after_str = day_after.strftime('%Y-%m-%d')
+    keyboard.append([
+        InlineKeyboardButton(text=f"📅 Послезавтра ({day_after.day}.{day_after.month})",
+                             callback_data=f"date_{day_after_str}")
+    ])
 
-    # Добавляем кнопки "Сегодня" и "Завтра"
-    builder.add(InlineKeyboardButton(
-        text=f"📅 Сегодня ({today_display})",
-        callback_data=f"date_{today.strftime('%Y-%m-%d')}"
-    ))
-    builder.add(InlineKeyboardButton(
-        text=f"📅 Завтра ({tomorrow_display})",
-        callback_data=f"date_{tomorrow.strftime('%Y-%m-%d')}"
-    ))
+    # Календарь для выбора любой даты
+    keyboard.append([
+        InlineKeyboardButton(text="🗓️ Выбрать другую дату", callback_data="select_month")
+    ])
 
-    # Добавляем кнопку для выбора другого дня
-    builder.add(InlineKeyboardButton(
-        text="📆 Выбрать другую дату",
-        callback_data="select_month"
-    ))
-
-    builder.adjust(1)  # Все кнопки в один столбец
-    return builder.as_markup()
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_zones_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(
-        text="🎵 Караоке зал",
-        callback_data="zone_karaoke"
-    ))
-    builder.add(InlineKeyboardButton(
-        text="🤫 Тихий зал",
-        callback_data="zone_quiet"
-    ))
-    return builder.as_markup()
+# Клавиатура для выбора времени с эмодзи статуса
+def get_time_slots(date, zone='main'):
+    keyboard = []
 
+    # Заголовок с датой
+    date_obj = datetime.strptime(date, '%Y-%m-%d')
+    formatted_date = date_obj.strftime('%d.%m.%Y')
 
-def get_tables_keyboard(date, time, zone):
-    """Показываем только свободные столики"""
-    from utils import get_available_tables
+    # Разделяем утро, день и вечер
+    morning_slots = []
+    afternoon_slots = []
+    evening_slots = []
 
-    builder = InlineKeyboardBuilder()
-    available_tables = get_available_tables(date, time, zone)
-
-    if not available_tables:
-        # Если нет свободных столиков
-        builder.add(InlineKeyboardButton(
-            text="❌ Нет свободных столиков",
-            callback_data="no_tables"
-        ))
-    else:
-        for table in available_tables:
-            builder.add(InlineKeyboardButton(
-                text=f"🪑 Столик {table}",
-                callback_data=f"table_{table}"
-            ))
-
-    builder.adjust(2)  # 2 кнопки в ряд
-    return builder.as_markup()
-
-
-def get_time_slots(date, zone):
-    """Генерация клавиатуры с временными слотами"""
-    from utils import validate_date
-
-    builder = InlineKeyboardBuilder()
-
-    # Проверяем, что дата валидна
-    valid, _ = validate_date(date)
-
-    if not valid:
-        return builder.as_markup()
-
-    # Генерируем слоты времени
     for hour in range(config.OPEN_TIME, config.CLOSE_TIME):
         for minute in ['00', '30']:
             time_str = f"{hour:02d}:{minute}"
+            available_tables = get_available_tables(date, time_str, zone)
 
-            # Проверяем, не прошло ли это время
-            try:
-                slot_datetime = datetime.strptime(f"{date} {time_str}", "%Y-%m-%d %H:%M")
-                if slot_datetime < datetime.now():
-                    continue  # Пропускаем прошедшее время
-            except ValueError:
-                pass
+            # Определяем период дня
+            if hour < 15:
+                period_list = morning_slots
+                period_emoji = "🌅"
+            elif hour < 19:
+                period_list = afternoon_slots
+                period_emoji = "🌇"
+            else:
+                period_list = evening_slots
+                period_emoji = "🌃"
 
-            builder.add(InlineKeyboardButton(
-                text=time_str,
-                callback_data=f"time_{time_str}"
-            ))
+            if available_tables:
+                free_count = len(available_tables)
+                button_text = f"{period_emoji} {time_str} (свободно: {free_count})"
+                period_list.append(InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"time_{time_str}"
+                ))
+            else:
+                button_text = f"❌ {time_str} (нет мест)"
+                period_list.append(InlineKeyboardButton(
+                    text=button_text,
+                    callback_data="no_tables"
+                ))
 
-    builder.adjust(4)
-    return builder.as_markup()
+    # Добавляем слоты по периодам с заголовками
+    if morning_slots:
+        keyboard.append([InlineKeyboardButton(text="🌅 Утро (12:00 - 15:00)", callback_data="no_tables")])
+        keyboard += [morning_slots[i:i + 2] for i in range(0, len(morning_slots), 2)]
+
+    if afternoon_slots:
+        keyboard.append([InlineKeyboardButton(text="🌇 День (15:00 - 19:00)", callback_data="no_tables")])
+        keyboard += [afternoon_slots[i:i + 2] for i in range(0, len(afternoon_slots), 2)]
+
+    if evening_slots:
+        keyboard.append([InlineKeyboardButton(text="🌃 Вечер (19:00 - 23:00)", callback_data="no_tables")])
+        keyboard += [evening_slots[i:i + 2] for i in range(0, len(evening_slots), 2)]
+
+    # Кнопка назад
+    keyboard.append([
+        InlineKeyboardButton(text="↩️ Выбрать другую дату", callback_data="back_to_date_selection")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+# Клавиатура выбора столиков с визуальной схемой
+def get_tables_keyboard(date, time, zone='main'):
+    available_tables = get_available_tables(date, time, zone)
+
+    keyboard = []
+
+    # Заголовок с информацией
+    keyboard.append([
+        InlineKeyboardButton(
+            text=f"🕐 {time} | Выберите столик:",
+            callback_data="no_tables"
+        )
+    ])
+
+    row = []
+
+    for table_num in config.TABLES.get(zone, []):
+        if table_num in available_tables:
+            button_text = f"🟢 {table_num}"
+            callback_data = f"table_{table_num}"
+        else:
+            button_text = f"🔴 {table_num}"
+            callback_data = "no_tables"
+
+        row.append(InlineKeyboardButton(text=button_text, callback_data=callback_data))
+
+        if len(row) == 4:  # 4 кнопки в ряду для лучшего отображения
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    # Легенда
+    keyboard.append([
+        InlineKeyboardButton(text="🟢 - свободно", callback_data="no_tables"),
+        InlineKeyboardButton(text="🔴 - занято", callback_data="no_tables")
+    ])
+
+    # Кнопки навигации
+    keyboard.append([
+        InlineKeyboardButton(text="↩️ Выбрать другое время", callback_data="back_to_time_selection"),
+        InlineKeyboardButton(text="🏠 В меню", callback_data="cancel_booking")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# Клавиатура для выбора количества гостей
 def get_guests_keyboard():
-    builder = InlineKeyboardBuilder()
-    for i in range(1, 7):
-        builder.add(InlineKeyboardButton(
-            text=str(i),
-            callback_data=f"guests_{i}"
-        ))
-    builder.adjust(3)
-    return builder.as_markup()
-
-
-def get_confirm_keyboard():
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(
-        text="✅ Подтвердить",
-        callback_data="confirm_booking"
-    ))
-    builder.add(InlineKeyboardButton(
-        text="❌ Отменить",
-        callback_data="cancel_booking"
-    ))
-    return builder.as_markup()
-
-
-def get_contact_keyboard():
-    keyboard = [[KeyboardButton(text="📱 Отправить номер телефона", request_contact=True)]]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-
-def get_name_input_keyboard():
-    """Клавиатура для ввода имени (без кнопок, только текстовый ввод)"""
-    return ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
-
-
-def get_admin_menu():
     keyboard = [
-        [KeyboardButton(text="📊 Все бронирования")],
-        [KeyboardButton(text="⏳ Ожидают подтверждения")],
-        [KeyboardButton(text="📅 Бронирования на сегодня")],
-        [KeyboardButton(text="↩️ Назад в меню")]
+        [InlineKeyboardButton(text="👤 1-2 гостя", callback_data="guests_2")],
+        [InlineKeyboardButton(text="👥 3-4 гостя", callback_data="guests_4")],
+        [InlineKeyboardButton(text="👨‍👩‍👧‍👦 5-6 гостей", callback_data="guests_6")],
+        [InlineKeyboardButton(text="👨‍👩‍👧‍👦👨‍👩‍👧‍👦 7+ гостей", callback_data="guests_more")]
     ]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+# Клавиатура для выбора точного количества гостей (если выбрано 7+)
+def get_more_guests_keyboard():
+    keyboard = []
+    row = []
+
+    for guests in range(7, config.MAX_GUESTS + 1):
+        row.append(InlineKeyboardButton(text=str(guests), callback_data=f"guests_{guests}"))
+
+        if len(row) == 4:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([
+        InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_guests")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# Клавиатура для ввода имени
+def get_name_input_keyboard():
+    keyboard = [[
+        InlineKeyboardButton(text="↩️ Отменить бронирование", callback_data="cancel_booking"),
+        InlineKeyboardButton(text="🏠 В меню", callback_data="go_to_menu")
+    ]]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# Клавиатура для ввода контакта
+def get_contact_keyboard():
+    keyboard = [[
+        KeyboardButton(text="📱 Отправить мой контакт", request_contact=True)
+    ], [
+        KeyboardButton(text="✏️ Ввести вручную")
+    ]]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="Поделитесь контактом или введите номер"
+    )
+
+
+# Клавиатура для подтверждения бронирования
+def get_confirm_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Да, забронировать!", callback_data="confirm_booking"),
+            InlineKeyboardButton(text="✏️ Изменить данные", callback_data="edit_booking")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отменить", callback_data="cancel_booking"),
+            InlineKeyboardButton(text="🏠 В меню", callback_data="go_to_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# Клавиатура для действий с бронированием (админ)
 def get_booking_actions(booking_id):
-    builder = InlineKeyboardBuilder()
-    builder.add(InlineKeyboardButton(
-        text="✅ Подтвердить",
-        callback_data=f"admin_confirm_{booking_id}"
-    ))
-    builder.add(InlineKeyboardButton(
-        text="❌ Отменить",
-        callback_data=f"admin_cancel_{booking_id}"
-    ))
-    builder.add(InlineKeyboardButton(
-        text="✏️ Изменить время",
-        callback_data=f"admin_edit_time_{booking_id}"
-    ))
-    builder.add(InlineKeyboardButton(
-        text="🗑️ Удалить",
-        callback_data=f"admin_delete_{booking_id}"
-    ))
-    builder.adjust(2)
-    return builder.as_markup()
+    keyboard = [
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"admin_confirm_{booking_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_cancel_{booking_id}")
+        ],
+        [
+            InlineKeyboardButton(text="📞 Позвонить", callback_data=f"admin_call_{booking_id}"),
+            InlineKeyboardButton(text="🗑️ Удалить", callback_data=f"admin_delete_{booking_id}")
+        ],
+        [
+            InlineKeyboardButton(text="✏️ Изменить время", callback_data=f"admin_edit_time_{booking_id}"),
+            InlineKeyboardButton(text="ℹ️ Детали", callback_data=f"admin_details_{booking_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+# Клавиатура для фильтрации бронирований (админ)
+def get_admin_filter_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton(text="📅 Сегодня", callback_data="admin_today"),
+            InlineKeyboardButton(text="📅 Завтра", callback_data="admin_tomorrow")
+        ],
+        [
+            InlineKeyboardButton(text="⏳ Ожидают", callback_data="admin_pending"),
+            InlineKeyboardButton(text="✅ Подтвержденные", callback_data="admin_confirmed")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмененные", callback_data="admin_cancelled"),
+            InlineKeyboardButton(text="📊 Все", callback_data="admin_all")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# Класс для работы с календарем
 class DateKeyboard:
-    """Класс для работы с клавиатурой выбора даты"""
-
-    @staticmethod
-    def get_dates_for_period():
-        """Получить список дат на 30 дней вперед с разбивкой по месяцам"""
-        today = datetime.now().date()
-        dates_by_month = {}
-
-        for i in range(30):  # 30 дней вперед
-            current_date = today + timedelta(days=i)
-            month_key = current_date.strftime("%Y-%m")
-            month_name = current_date.strftime("%B %Y").lower()
-
-            if month_key not in dates_by_month:
-                # Русские названия месяцев
-                month_translation = {
-                    "january": "январь", "february": "февраль", "march": "март",
-                    "april": "апрель", "may": "май", "june": "июнь",
-                    "july": "июль", "august": "август", "september": "сентябрь",
-                    "october": "октябрь", "november": "ноябрь", "december": "декабрь"
-                }
-
-                # Перевод названия месяца
-                english_month = current_date.strftime("%B").lower()
-                russian_month = month_translation.get(english_month, english_month)
-
-                dates_by_month[month_key] = {
-                    'name': russian_month,
-                    'year': current_date.year,
-                    'dates': []
-                }
-
-            dates_by_month[month_key]['dates'].append({
-                'date': current_date,
-                'display': str(current_date.day),  # Просто число
-                'callback': current_date.strftime("%Y-%m-%d")
-            })
-
-        return dates_by_month
-
     @staticmethod
     def get_months_keyboard():
-        """Получить клавиатуру с выбором месяца"""
-        dates_by_month = DateKeyboard.get_dates_for_period()
-        builder = InlineKeyboardBuilder()
+        today = datetime.now()
 
-        for month_data in dates_by_month.values():
-            month_name = month_data['name'].capitalize()
-            year = month_data['year']
+        keyboard = []
 
-            builder.add(InlineKeyboardButton(
-                text=f"{month_name} {year}",
-                callback_data=f"month_{month_data['dates'][0]['date'].strftime('%Y-%m')}"
-            ))
+        # Русские названия месяцев
+        month_names = {
+            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+        }
 
-        # Добавляем кнопку "Назад"
-        builder.add(InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data="back_to_date_selection"
-        ))
+        # Показываем текущий и 2 следующих месяца
+        for i in range(3):
+            month_date = today + timedelta(days=30 * i)
+            month_key = f"{month_date.year}-{month_date.month}"
+            month_name = month_names.get(month_date.month, f"Месяц {month_date.month}")
+            year_display = f" {month_date.year}" if today.year != month_date.year else ""
 
-        builder.adjust(1)
-        return builder.as_markup()
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"📅 {month_name}{year_display}",
+                    callback_data=f"month_{month_key}"
+                )
+            ])
+
+        # Кнопка назад
+        keyboard.append([
+            InlineKeyboardButton(text="↩️ Назад к выбору даты", callback_data="back_to_date_selection")
+        ])
+
+        return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
     @staticmethod
     def get_days_for_month(month_key):
-        """Получить клавиатуру с днями месяца"""
-        dates_by_month = DateKeyboard.get_dates_for_period()
+        try:
+            year, month = map(int, month_key.split('-'))
 
-        if month_key not in dates_by_month:
+            today = datetime.now()
+            selected_date = datetime(year, month, 1)
+            max_date = today + timedelta(days=30)
+
+            if selected_date > max_date:
+                return None
+
+            # Получаем количество дней в месяце
+            if month == 12:
+                next_month = datetime(year + 1, 1, 1)
+            else:
+                next_month = datetime(year, month + 1, 1)
+
+            days_in_month = (next_month - selected_date).days
+
+            keyboard = []
+
+            # Заголовок с названием месяца
+            month_names = {
+                1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+                5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+                9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+            }
+            month_name = month_names.get(month, f"Месяц {month}")
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"📅 {month_name} {year}",
+                    callback_data="no_tables"
+                )
+            ])
+
+            row = []
+
+            for day in range(1, days_in_month + 1):
+                date_str = f"{year}-{month:02d}-{day:02d}"
+                current_date = datetime(year, month, day).date()
+
+                # Пропускаем прошедшие даты
+                if current_date < today.date() or current_date > max_date.date():
+                    continue
+
+                # Определяем эмодзи для даты
+                if current_date == today.date():
+                    emoji = "🟢"
+                elif current_date == today.date() + timedelta(days=1):
+                    emoji = "🟡"
+                else:
+                    emoji = "⚪"
+
+                row.append(InlineKeyboardButton(
+                    text=f"{emoji} {day}",
+                    callback_data=f"date_{date_str}"
+                ))
+
+                if len(row) == 7:
+                    keyboard.append(row)
+                    row = []
+
+            if row:
+                keyboard.append(row)
+
+            # Кнопка назад
+            keyboard.append([
+                InlineKeyboardButton(text="↩️ Выбрать другой месяц", callback_data="select_month")
+            ])
+
+            if len(keyboard) > 2:  # Если есть хотя бы одна дата
+                return InlineKeyboardMarkup(inline_keyboard=keyboard)
+            else:
+                return None
+
+        except ValueError:
             return None
-
-        builder = InlineKeyboardBuilder()
-        month_data = dates_by_month[month_key]
-
-        # Добавляем дни месяца
-        for day_data in month_data['dates']:
-            builder.add(InlineKeyboardButton(
-                text=day_data['display'],  # Просто число
-                callback_data=f"date_{day_data['callback']}"
-            ))
-
-        # Добавляем кнопку "Назад к выбору месяца"
-        builder.add(InlineKeyboardButton(
-            text="⬅️ Назад",
-            callback_data="select_month"
-        ))
-
-        # Автоматически подбираем количество кнопок в ряд
-        # Первые строки - по 7 кнопок (дни недели), последняя - кнопка "Назад"
-        total_days = len(month_data['dates'])
-        rows = (total_days + 6) // 7  # Вычисляем количество полных строк
-
-        # Сначала настраиваем дни (по 7 в ряд)
-        builder.adjust(7, *[7] * (rows - 1), 1)  # Последний ряд для кнопки "Назад"
-
-        return builder.as_markup()
