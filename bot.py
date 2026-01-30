@@ -34,7 +34,6 @@ admin_router.message.filter(IsAdminFilter())
 # Состояния для FSM
 class BookingStates(StatesGroup):
     waiting_for_date = State()
-    waiting_for_month = State()
     waiting_for_time = State()
     waiting_for_table = State()
     waiting_for_guests = State()
@@ -49,6 +48,103 @@ dp.include_router(user_router)
 
 
 # ========== ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+
+
+
+
+# В класс StatesGroup добавьте (если нужно):
+class AdminStates(StatesGroup):
+    waiting_for_confirm_outdated = State()
+    waiting_for_confirm_cancelled = State()
+
+
+# Обновите обработчики с подтверждением:
+
+@admin_router.message(F.text == "🗑️ Удалить неактуальные")
+async def confirm_delete_outdated(message: Message, state: FSMContext):
+    """Подтверждение удаления неактуальных бронирований"""
+    session = get_session()
+    try:
+        now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        current_time = now.strftime('%H:%M')
+
+        # Считаем количество
+        outdated_count = session.query(Booking).filter(
+            (Booking.date < today) |
+            ((Booking.date == today) & (Booking.time < current_time))
+        ).count()
+
+        if outdated_count == 0:
+            await message.answer(
+                "✅ <b>Нет неактуальных (прошедших) бронирований.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        await state.set_state(AdminStates.waiting_for_confirm_outdated)
+        await state.update_data(outdated_count=outdated_count)
+
+        await message.answer(
+            f"⚠️ <b>Подтвердите удаление {outdated_count} неактуальных бронирований:</b>\n\n"
+            f"🗑️ <b>Будут удалены:</b>\n"
+            f"• Бронирования с прошедшей датой\n"
+            f"• Бронирования с прошедшим временем сегодня\n\n"
+            f"<i>Статусы: pending, confirmed, cancelled</i>\n\n"
+            f"<b>Для подтверждения нажмите:</b>\n"
+            f"✅ <code>Удалить {outdated_count} неактуальных</code>\n\n"
+            f"<i>Или отправьте любую другую команду для отмены.</i>",
+            parse_mode="HTML"
+        )
+
+    finally:
+        session.close()
+
+
+@admin_router.message(AdminStates.waiting_for_confirm_outdated)
+async def execute_delete_outdated(message: Message, state: FSMContext):
+    """Выполнение удаления неактуальных бронирований"""
+    if f"Удалить" in message.text:
+        data = await state.get_data()
+        outdated_count = data.get('outdated_count', 0)
+
+        session = get_session()
+        try:
+            now = datetime.now()
+            today = now.strftime('%Y-%m-%d')
+            current_time = now.strftime('%H:%M')
+
+            # Удаляем
+            deleted = session.query(Booking).filter(
+                (Booking.date < today) |
+                ((Booking.date == today) & (Booking.time < current_time))
+            ).delete()
+
+            session.commit()
+
+            await message.answer(
+                f"✅ <b>Удалено {deleted} неактуальных бронирований.</b>",
+                parse_mode="HTML"
+            )
+
+            logger.info(f"Админ {message.from_user.id} удалил {deleted} неактуальных бронирований")
+
+        except Exception as e:
+            logger.error(f"Ошибка при удалении неактуальных бронирований: {e}")
+            await message.answer(
+                "❌ <b>Произошла ошибка при удалении.</b>",
+                parse_mode="HTML"
+            )
+        finally:
+            session.close()
+    else:
+        await message.answer(
+            "❌ <b>Удаление отменено.</b>",
+            parse_mode="HTML"
+        )
+
+    await state.clear()
 
 async def show_welcome_message(message: Message, state: FSMContext = None):
     """Показать приветственное сообщение"""
@@ -151,10 +247,10 @@ async def cmd_help(message: Message):
         "/admin - Открыть панель администратора\n\n"
 
         "📞 <b>Если возникли проблемы:</b>\n"
-        "• Используйте кнопку '📞 Контакты'\n"
-        "• Или свяжитесь по телефону: +7 (999) 123-45-67\n\n"
+        f"• Используйте кнопку '📞 Контакты'\n"
+        f"• Или свяжитесь по телефону: {config.RESTAURANT_PHONE}\n\n"
 
-        "<i>Бот работает с 12:00 до 23:00 ежедневно.</i>"
+        f"<i>Бот работает с {config.OPEN_TIME_STR} до {config.CLOSE_TIME_STR} ежедневно.</i>"
     )
 
     await message.answer(help_text, parse_mode="HTML")
@@ -168,16 +264,31 @@ async def start_booking(message: Message, state: FSMContext):
     today = datetime.now()
     formatted_today = today.strftime('%d.%m.%Y')
 
-    await message.answer(
-        f"🎯 <b>Начнем бронирование!</b>\n\n"
-        f"<i>Выберите дату для вашего визита:</i>\n\n"
-        f"📅 Сегодня: {formatted_today}\n"
-        f"⏰ Часы работы: 12:00 - 23:00\n"
-        f"🪑 Всего столиков: {len(config.TABLES['main'])}\n\n"
-        f"<i>Вы можете выбрать дату из списка или открыть календарь.</i>",
-        parse_mode="HTML",
-        reply_markup=get_date_selection()
-    )
+    # Проверяем, можно ли сегодня бронировать
+    now = datetime.now()
+    now_in_minutes = now.hour * 60 + now.minute
+
+    if now_in_minutes > config.LAST_BOOKING_TIME_MINUTES:
+        await message.answer(
+            f"❌ <b>Бронирование на сегодня завершено</b>\n\n"
+            f"Мы работаем до {config.CLOSE_TIME_STR}. "
+            f"Последняя бронь возможна до {config.LAST_BOOKING_TIME_STR}.\n\n"
+            f"Пожалуйста, выберите дату начиная с завтрашнего дня.",
+            parse_mode="HTML",
+            reply_markup=get_date_selection()
+        )
+    else:
+        await message.answer(
+            f"🎯 <b>Начнем бронирование!</b>\n\n"
+            f"<i>Выберите дату для вашего визита:</i>\n\n"
+            f"📅 Сегодня: {formatted_today}\n"
+            f"⏰ Часы работы: {config.WORKING_HOURS_STR}\n"
+            f"🕒 Последняя бронь: {config.LAST_BOOKING_TIME_STR}\n"
+            f"🪑 Всего столиков: {len(config.TABLES['main'])}\n\n"
+            f"<i>Выберите дату из списка ниже:</i>",
+            parse_mode="HTML",
+            reply_markup=get_date_selection()
+        )
 
 
 @user_router.message(F.text == "📋 Мои бронирования")
@@ -244,22 +355,21 @@ async def show_about(message: Message):
     about_text = (
         f"🍽️ <b>{config.RESTAURANT_NAME}</b>\n\n"
 
-        "<b>О нашем заведении:</b>\n"
-        "Мы создаем уютную атмосферу для вашего идеального вечера. "
-        "В нашем зале комфортно разместятся как романтическая пара, "
-        "так и большая компания друзей.\n\n"
+        f"<b>О нашем заведении:</b>\n"
+        f"{config.restaurant_config['about']['description']}\n\n"
 
-        "<b>📋 Особенности:</b>\n"
-        "• 🪑 Уютные столики на 1-10 человек\n"
-        "• 🎵 Приятная фоновая музыка\n"
-        "• 👨‍🍳 Высококачественная кухня\n"
-        "• 🍷 Богатый выбор напитков\n"
-        "• 🅿️ Удобная парковка рядом\n\n"
+        f"<b>📋 Особенности:</b>\n"
+    )
 
-        "<b>⏰ Часы работы:</b>\n"
-        f"Ежедневно с {config.OPEN_TIME}:00 до {config.CLOSE_TIME}:00\n\n"
+    # Добавляем особенности
+    for feature in config.restaurant_config['about']['features']:
+        about_text += f"{feature}\n"
 
-        "<i>Ждем вас в гости! Для бронирования нажмите '🎯 Забронировать столик'.</i>"
+    about_text += (
+        f"\n<b>⏰ Часы работы:</b>\n"
+        f"Ежедневно с {config.OPEN_TIME_STR} до {config.CLOSE_TIME_STR}\n\n"
+
+        f"<i>Ждем вас в гости! Для бронирования нажмите '🎯 Забронировать столик'.</i>"
     )
 
     await message.answer(about_text, parse_mode="HTML")
@@ -274,17 +384,17 @@ async def show_contacts(message: Message):
         f"🏢 <b>{config.RESTAURANT_NAME}</b>\n"
         f"📍 Адрес: {config.RESTAURANT_ADDRESS}\n"
         f"📱 Телефон: {config.RESTAURANT_PHONE}\n"
-        f"⏰ Часы работы: {config.OPEN_TIME}:00 - {config.CLOSE_TIME}:00\n\n"
+        f"⏰ Часы работы: {config.WORKING_HOURS_STR}\n\n"
 
         "<b>🗺️ Как добраться:</b>\n"
-        "• 🚇 Метро: станция 'Центральная' (5 минут пешком)\n"
-        "• 🚌 Автобусы: 10, 25, 30 (остановка 'Улица Примерная')\n"
-        "• 🚗 Парковка: бесплатная, на территории заведения\n\n"
+        f"• 🚇 Метро: {config.restaurant_config['location']['metro']}\n"
+        f"• 🚌 Автобусы: {config.restaurant_config['location']['buses']}\n"
+        f"• 🚗 Парковка: {config.restaurant_config['location']['parking']}\n\n"
 
         "<b>📱 Социальные сети:</b>\n"
-        "• Instagram: @vkusnyi_ugolok\n"
-        "• VK: vk.com/vkusnyi_ugolok\n"
-        "• Telegram: @vkusnyi_ugolok\n\n"
+        f"• Instagram: {config.restaurant_config['social_media']['instagram']}\n"
+        f"• VK: {config.restaurant_config['social_media']['vk']}\n"
+        f"• Telegram: {config.restaurant_config['social_media']['telegram']}\n\n"
 
         "<i>Для бронирования столика нажмите '🎯 Забронировать столик'.</i>"
     )
@@ -330,7 +440,8 @@ async def process_date(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"✅ <b>Дата выбрана:</b> {formatted_date} ({day_name})\n\n"
         f"<i>Теперь выберите удобное время:</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_back_to_dates_keyboard()
     )
 
     # Показываем доступные временные слоты
@@ -343,57 +454,10 @@ async def process_date(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@user_router.callback_query(F.data == "select_month")
-async def select_month(callback: CallbackQuery, state: FSMContext):
-    """Показать выбор месяца"""
-    await state.set_state(BookingStates.waiting_for_month)
-    await callback.message.edit_text(
-        "🗓️ <b>Выберите месяц:</b>",
-        parse_mode="HTML",
-        reply_markup=DateKeyboard.get_months_keyboard()
-    )
-    await callback.answer()
-
-
-@user_router.callback_query(F.data.startswith("month_"))
-async def process_month(callback: CallbackQuery, state: FSMContext):
-    """Обработка выбора месяца"""
-    month_key = callback.data.split("_")[1]
-    days_keyboard = DateKeyboard.get_days_for_month(month_key)
-
-    if days_keyboard:
-        year, month_num = map(int, month_key.split('-'))
-        month_names = {
-            1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
-            5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
-            9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
-        }
-        month_name = month_names.get(month_num, month_key)
-
-        await callback.message.edit_text(
-            f"📅 <b>Выберите день в {month_name} {year}:</b>\n\n"
-            f"<i>Легенда:\n"
-            f"🟢 - сегодня\n"
-            f"🟡 - завтра\n"
-            f"⚪ - другие дни</i>",
-            parse_mode="HTML",
-            reply_markup=days_keyboard
-        )
-    else:
-        await callback.answer("❌ Нет доступных дат в этом месяце", show_alert=True)
-
-    await callback.answer()
-
-
 @user_router.callback_query(F.data.startswith("time_"))
 async def process_time(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора времени"""
     time_str = callback.data.split("_")[1]
-
-    valid, msg = validate_time(time_str)
-    if not valid:
-        await callback.answer(msg, show_alert=True)
-        return
 
     data = await state.get_data()
 
@@ -426,7 +490,8 @@ async def process_time(callback: CallbackQuery, state: FSMContext):
         f"✅ <b>Время выбрано:</b> {time_str}\n"
         f"📅 Дата: {formatted_date}\n\n"
         f"<i>Свободных столиков: {len(available_tables)} из {len(config.TABLES['main'])}</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_back_to_times_keyboard()
     )
 
     await callback.message.answer(
@@ -485,7 +550,8 @@ async def process_table(callback: CallbackQuery, state: FSMContext):
         f"📅 Дата: {formatted_date}\n"
         f"⏰ Время: {time}\n\n"
         f"<i>Отлично! Теперь укажите количество гостей:</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_back_to_tables_keyboard()
     )
 
     await callback.message.answer(
@@ -539,7 +605,8 @@ async def process_guests(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"✅ <b>Количество гостей:</b> {guests}\n\n"
         f"<i>Отлично! Теперь введите ваше имя:</i>",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=get_back_to_guests_keyboard()
     )
 
     await callback.message.answer(
@@ -770,41 +837,6 @@ async def confirm_booking(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@user_router.callback_query(F.data == "edit_booking")
-async def edit_booking(callback: CallbackQuery, state: FSMContext):
-    """Редактирование данных бронирования"""
-    await callback.message.edit_text(
-        "✏️ <b>Редактирование данных:</b>\n\n"
-        "В данный момент редактирование возможно только через отмену "
-        "текущей заявки и создание новой.\n\n"
-        "Хотите создать новую заявку?",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Да, начать заново", callback_data="cancel_booking"),
-                InlineKeyboardButton(text="❌ Нет, оставить", callback_data="go_back")
-            ]
-        ])
-    )
-    await callback.answer()
-
-
-@user_router.callback_query(F.data == "go_back")
-async def go_back_to_confirm(callback: CallbackQuery, state: FSMContext):
-    """Возврат к подтверждению"""
-    data = await state.get_data()
-    booking_summary = format_booking_data(data)
-
-    await callback.message.edit_text(
-        f"📋 <b>Сводка вашего бронирования:</b>\n\n"
-        f"{booking_summary}\n\n"
-        f"<i>Проверьте все данные и подтвердите бронирование:</i>",
-        parse_mode="HTML",
-        reply_markup=get_confirm_keyboard()
-    )
-    await callback.answer()
-
-
 @user_router.callback_query(F.data == "cancel_booking")
 async def cancel_booking_user(callback: CallbackQuery, state: FSMContext):
     """Отмена бронирования пользователем"""
@@ -812,18 +844,6 @@ async def cancel_booking_user(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("❌ <b>Бронирование отменено.</b>", parse_mode="HTML")
     await callback.message.answer(
         "Вы можете начать новое бронирование в любое время:",
-        reply_markup=get_main_menu()
-    )
-    await callback.answer()
-
-
-@user_router.callback_query(F.data == "go_to_menu")
-async def go_to_menu(callback: CallbackQuery, state: FSMContext):
-    """Переход в главное меню"""
-    await state.clear()
-    await callback.message.edit_text("🏠 <b>Возвращаюсь в главное меню...</b>", parse_mode="HTML")
-    await callback.message.answer(
-        "Выберите действие:",
         reply_markup=get_main_menu()
     )
     await callback.answer()
@@ -1048,8 +1068,7 @@ async def admin_confirm_booking(callback: CallbackQuery):
                 f"✅ <b>ВАША БРОНЬ ПОДТВЕРЖДЕНА!</b>\n\n"
                 f"{format_booking_data(booking)}\n\n"
                 f"📅 Мы ждем вас {booking.date} в {booking.time}\n"
-                f"🪑 Столик №{booking.table_number}\n\n"
-                f"<i>Приятного вечера!</i>",
+                f"🪑 Столик №{booking.table_number}\n\n",
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -1064,6 +1083,105 @@ async def admin_confirm_booking(callback: CallbackQuery):
 
     finally:
         session.close()
+
+
+@admin_router.message(F.text == "🗑️ Удалить неактуальные")
+async def delete_outdated_bookings(message: Message):
+    """Удаление прошедших (неактуальных) бронирований"""
+    session = get_session()
+    try:
+        now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        current_time = now.strftime('%H:%M')
+
+        # Находим прошедшие бронирования (дата < сегодня или дата = сегодня и время < текущего)
+        outdated_bookings = session.query(Booking).filter(
+            (Booking.date < today) |
+            ((Booking.date == today) & (Booking.time < current_time))
+        ).all()
+
+        outdated_count = len(outdated_bookings)
+
+        if outdated_count == 0:
+            await message.answer(
+                "✅ <b>Нет неактуальных (прошедших) бронирований.</b>\n"
+                "Все бронирования актуальны.",
+                parse_mode="HTML"
+            )
+            return
+
+        # Удаляем
+        for booking in outdated_bookings:
+            session.delete(booking)
+
+        session.commit()
+
+        await message.answer(
+            f"✅ <b>Удалено {outdated_count} неактуальных бронирований.</b>\n\n"
+            f"🗑️ <b>Удалены:</b>\n"
+            f"• Бронирования с прошедшей датой\n"
+            f"• Бронирования с прошедшим временем сегодня\n\n"
+            f"<i>Статусы бронирований: pending, confirmed, cancelled</i>",
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Админ {message.from_user.id} удалил {outdated_count} неактуальных бронирований")
+
+    except Exception as e:
+        logger.error(f"Ошибка при удалении неактуальных бронирований: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при удалении.</b>\n"
+            "Попробуйте позже или свяжитесь с разработчиком.",
+            parse_mode="HTML"
+        )
+    finally:
+        session.close()
+
+
+@admin_router.message(F.text == "🗑️ Удалить отмененные")
+async def delete_cancelled_bookings(message: Message):
+    """Удаление всех отмененных бронирований"""
+    session = get_session()
+    try:
+        # Находим все отмененные бронирования
+        cancelled_bookings = session.query(Booking).filter(
+            Booking.status == 'cancelled'
+        ).all()
+
+        cancelled_count = len(cancelled_bookings)
+
+        if cancelled_count == 0:
+            await message.answer(
+                "✅ <b>Нет отмененных бронирований.</b>",
+                parse_mode="HTML"
+            )
+            return
+
+        # Удаляем
+        for booking in cancelled_bookings:
+            session.delete(booking)
+
+        session.commit()
+
+        await message.answer(
+            f"✅ <b>Удалено {cancelled_count} отмененных бронирований.</b>\n\n"
+            f"🗑️ <b>Удалены только бронирования со статусом 'cancelled'.</b>\n\n"
+            f"<i>Активные брони (pending, confirmed) не затронуты.</i>",
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Админ {message.from_user.id} удалил {cancelled_count} отмененных бронирований")
+
+    except Exception as e:
+        logger.error(f"Ошибка при удалении отмененных бронирований: {e}")
+        await message.answer(
+            "❌ <b>Произошла ошибка при удалении.</b>\n"
+            "Попробуйте позже или свяжитесь с разработчиком.",
+            parse_mode="HTML"
+        )
+    finally:
+        session.close()
+
 
 
 @admin_router.callback_query(F.data.startswith("admin_cancel_"))
@@ -1100,28 +1218,6 @@ async def admin_cancel_booking(callback: CallbackQuery):
             reply_markup=get_booking_actions(booking.id)
         )
         await callback.answer("❌ Бронь отменена")
-
-    finally:
-        session.close()
-
-
-@admin_router.callback_query(F.data.startswith("admin_delete_"))
-async def admin_delete_booking(callback: CallbackQuery):
-    """Удаление бронирования админом"""
-    booking_id = int(callback.data.split("_")[-1])
-
-    session = get_session()
-    try:
-        booking = session.query(Booking).get(booking_id)
-        if not booking:
-            await callback.answer("❌ Бронь не найдена", show_alert=True)
-            return
-
-        session.delete(booking)
-        session.commit()
-
-        await callback.message.delete()
-        await callback.answer("🗑️ Бронь удалена")
 
     finally:
         session.close()
@@ -1177,10 +1273,7 @@ async def admin_details_booking(callback: CallbackQuery):
         details = (
             f"📋 <b>Детальная информация о брони #{booking.id}</b>\n\n"
             f"{format_booking_data(booking)}\n\n"
-            f"{user_info}\n"
-            f"📅 Создано: {booking.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"🆔 ID пользователя: {booking.user_id}\n"
-            f"👤 Username: @{booking.username or 'не указан'}"
+            f"{user_info}"
         )
 
         await callback.message.answer(details, parse_mode="HTML")
@@ -1188,17 +1281,6 @@ async def admin_details_booking(callback: CallbackQuery):
 
     finally:
         session.close()
-
-
-@admin_router.callback_query(F.data.startswith("admin_edit_time_"))
-async def admin_edit_time(callback: CallbackQuery):
-    """Изменение времени бронирования"""
-    booking_id = int(callback.data.split("_")[-1])
-    await callback.answer(
-        "✏️ Функция изменения времени находится в разработке.\n"
-        "Пока что отмените бронь и создайте новую с правильным временем.",
-        show_alert=True
-    )
 
 
 # ========== ОБРАБОТЧИК ДЛЯ НЕРАСПОЗНАННЫХ СООБЩЕНИЙ ==========
@@ -1214,7 +1296,6 @@ async def handle_other_messages(message: Message, state: FSMContext):
         # Понятные подсказки для каждого состояния
         state_hints = {
             "waiting_for_date": "📅 Пожалуйста, выберите дату из предложенных вариантов",
-            "waiting_for_month": "🗓️ Выберите месяц из предложенных вариантов",
             "waiting_for_time": "⏰ Выберите время из предложенных вариантов",
             "waiting_for_table": "🪑 Выберите столик из предложенных вариантов",
             "waiting_for_guests": "👥 Выберите количество гостей",
@@ -1240,6 +1321,37 @@ async def handle_other_messages(message: Message, state: FSMContext):
         )
 
 
+# ========== ФУНКЦИЯ АВТОМАТИЧЕСКОГО УДАЛЕНИЯ УСТАРЕВШИХ БРОНЕЙ ==========
+
+async def cleanup_expired_bookings():
+    """Автоматическое удаление устаревших бронирований"""
+    while True:
+        try:
+            session = get_session()
+            now = datetime.now()
+            today = now.strftime('%Y-%m-%d')
+            current_time = now.strftime('%H:%M')
+
+            # Удаляем прошедшие бронирования
+            expired_bookings = session.query(Booking).filter(
+                (Booking.date < today) |
+                ((Booking.date == today) & (Booking.time < current_time))
+            ).all()
+
+            if expired_bookings:
+                for booking in expired_bookings:
+                    session.delete(booking)
+                session.commit()
+                logger.info(f"Удалено {len(expired_bookings)} устаревших бронирований")
+
+            session.close()
+        except Exception as e:
+            logger.error(f"Ошибка при очистке устаревших бронирований: {e}")
+
+        # Проверяем каждую минуту
+        await asyncio.sleep(60)
+
+
 # ========== ЗАПУСК БОТА ==========
 
 async def main():
@@ -1250,8 +1362,12 @@ async def main():
         os.makedirs('data')
         logger.info("Создана директория 'data'")
 
-    logger.info("Запуск бота бронирования столиков...")
-    logger.info(f"Название ресторана: {config.RESTAURANT_NAME}")
+    # Запускаем задачу по очистке устаревших бронирований
+    asyncio.create_task(cleanup_expired_bookings())
+
+    logger.info(f"Запуск бота для ресторана '{config.RESTAURANT_NAME}'")
+    logger.info(f"Часы работы: {config.WORKING_HOURS_STR}")
+    logger.info(f"Последняя бронь: {config.LAST_BOOKING_TIME_STR}")
     logger.info(f"Количество столиков: {len(config.TABLES['main'])}")
     logger.info(f"Администраторов: {len(config.ADMIN_IDS)}")
 

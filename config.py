@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from restaurant_config import RESTAURANT_CONFIG, get_working_hours, get_last_booking_time
 
 load_dotenv()
 
@@ -9,34 +10,65 @@ class Config:
         self.BOT_TOKEN = os.getenv("BOT_TOKEN", "")
         self._admin_ids = None
 
-        # Зоны и столики (теперь один зал)
-        self.ZONES = {
-            "main": "🍽️ Основной зал"
-        }
+        # Загружаем конфигурацию из restaurant_config.py
+        self.restaurant_config = RESTAURANT_CONFIG
 
-        self.TABLES = {
-            "main": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]  # Все столики в основном зале
-        }
+        # Время работы (разбираем на часы и минуты)
+        self.OPEN_TIME_STR = self.restaurant_config["open_time"]
+        self.CLOSE_TIME_STR = self.restaurant_config["close_time"]
 
-        # Время работы
-        self.OPEN_TIME = 12
-        self.CLOSE_TIME = 23
+        # Разбираем время на часы и минуты
+        self.OPEN_HOUR, self.OPEN_MINUTE = map(int, self.OPEN_TIME_STR.split(':'))
+        self.CLOSE_HOUR, self.CLOSE_MINUTE = map(int, self.CLOSE_TIME_STR.split(':'))
+
+        # Преобразуем в минуты для удобства расчетов
+        self.OPEN_TIME_MINUTES = self.OPEN_HOUR * 60 + self.OPEN_MINUTE
+        self.CLOSE_TIME_MINUTES = self.CLOSE_HOUR * 60 + self.CLOSE_MINUTE
+
+        # Получаем время последней брони (за час до закрытия)
+        self.LAST_BOOKING_TIME_STR = get_last_booking_time()
+        last_booking_hour, last_booking_minute = map(int, self.LAST_BOOKING_TIME_STR.split(':'))
+        self.LAST_BOOKING_TIME_MINUTES = last_booking_hour * 60 + last_booking_minute
+
+        # Интервал времени для бронирования
+        self.TIME_INTERVAL = self.restaurant_config["time_interval"]  # в минутах
 
         # Название ресторана
-        self.RESTAURANT_NAME = "Вкусный уголок"
+        self.RESTAURANT_NAME = self.restaurant_config["name"]
 
         # Контакты
-        self.RESTAURANT_ADDRESS = "ул. Примерная, 123"
-        self.RESTAURANT_PHONE = "+7 (999) 123-45-67"
+        self.RESTAURANT_ADDRESS = self.restaurant_config["address"]
+        self.RESTAURANT_PHONE = self.restaurant_config["phone"]
 
         # Максимальное количество гостей за столом
-        self.MAX_GUESTS = 10
+        self.MAX_GUESTS = self.restaurant_config["max_guests"]
+
+        # Зоны и столики
+        self.ZONES = self.restaurant_config["zones"]
+        self.TABLES = {
+            "main": self.restaurant_config["tables"]  # Все столики в основном зале
+        }
 
         # Проверка загрузки токена
         if not self.BOT_TOKEN:
             print("⚠️ ВНИМАНИЕ: BOT_TOKEN не загружен!")
         else:
             print("✅ BOT_TOKEN успешно загружен")
+
+    @property
+    def WORKING_HOURS_STR(self):
+        """Время работы в строковом формате"""
+        return f"{self.OPEN_TIME_STR} - {self.CLOSE_TIME_STR}"
+
+    @property
+    def LAST_BOOKING_HOUR(self):
+        """Час последней брони"""
+        return int(self.LAST_BOOKING_TIME_STR.split(':')[0])
+
+    @property
+    def LAST_BOOKING_MINUTE(self):
+        """Минута последней брони"""
+        return int(self.LAST_BOOKING_TIME_STR.split(':')[1])
 
     @property
     def ADMIN_IDS(self):
