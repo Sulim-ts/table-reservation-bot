@@ -15,3 +15,4 @@ class IsAdminFilter(BaseFilter):
         logger.info(f"Admin IDs: {config.ADMIN_IDS}")
 
         return is_admin
+

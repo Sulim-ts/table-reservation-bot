@@ -54,6 +54,7 @@ dp.include_router(user_router)
 
 
 
+
 # В класс StatesGroup добавьте (если нужно):
 class AdminStates(StatesGroup):
     waiting_for_confirm_outdated = State()

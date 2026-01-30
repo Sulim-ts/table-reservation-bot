@@ -200,3 +200,4 @@ def generate_time_slots():
         current_minutes += config.TIME_INTERVAL
 
     return slots
+

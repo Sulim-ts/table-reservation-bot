@@ -122,3 +122,4 @@ try:
     print(f"⏰ Последняя бронь: {get_last_booking_time()}")
 except Exception as e:
     print(f"❌ Ошибка в конфигурации ресторана: {e}")
+

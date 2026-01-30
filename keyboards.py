@@ -330,3 +330,4 @@ def get_back_to_guests_keyboard():
         InlineKeyboardButton(text="↩️ Назад к выбору гостей", callback_data="back_to_guests")
     ]]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
